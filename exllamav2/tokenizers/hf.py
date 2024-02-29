@@ -13,6 +13,7 @@ class ExLlamaV2TokenizerHF(ExLlamaV2TokenizerBase):
 
     space_char_: str = " "
     newline_char_: str = "\n"
+    vocab = None
 
     def __init__(self, tokenizer_json: str) -> None:
         super().__init__()
@@ -44,8 +45,35 @@ class ExLlamaV2TokenizerHF(ExLlamaV2TokenizerBase):
     def newline_char(self): return self.newline_char_
 
     def enumerate_tokens(self):
-        items = self.hf_tokenizer.get_vocab().items()
-        return ((v, k) for k, v in items)
+        if self.vocab is not None: return enumerate(self.vocab)
+        self.vocab = []
+
+        test_enc = self.hf_tokenizer.encode(" t", add_special_tokens = False)
+        test_count = len(test_enc.ids)
+        assert test_count > 0, "Tokenizer error, test string encodes to zero tokens"
+        test_id = test_enc.ids[0]
+        test_piece = self.hf_tokenizer.decode([test_id])
+
+        if test_count == 1 and len(test_piece) == len(" t"):
+
+            for i in range(self.vocab_size()):
+                d = self.hf_tokenizer.decode([i])
+                self.vocab.append(d)
+
+        else:
+
+            prefix_id = self.hf_tokenizer.encode(" ", add_special_tokens = False).ids[0]
+            prefix_piece = self.hf_tokenizer.decode([prefix_id])
+            prefix_len = len(prefix_piece)
+
+            for i in range(self.vocab_size()):
+                if i == 561:
+                    xx = 0
+                dt = self.hf_tokenizer.decode([prefix_id, i])
+                d = dt[prefix_len:]
+                self.vocab.append(d)
+
+        return enumerate(self.vocab)
 
     def vocab_size(self) -> int:
         return self.hf_tokenizer.get_vocab_size()

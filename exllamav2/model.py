@@ -1,5 +1,5 @@
 
-import sys
+import os, sys
 min_version = (3, 8)
 if sys.version_info < min_version:
     print("")
@@ -7,9 +7,16 @@ if sys.version_info < min_version:
     print("")
 
 # Set CUDA context to lazy loading since we won't need 95% of the modules in Torch
+os.environ["CUDA_MODULE_LOADING"] = "LAZY"
 
-import os
-os.environ['CUDA_MODULE_LOADING']='LAZY'
+# # Set cudaMallocAsync allocator by default as it appears slightly more memory efficient, unless Torch is already
+# # imported in which case changing the allocator would cause it to crash
+# if not "PYTORCH_CUDA_ALLOC_CONF" in os.environ:
+#     try:
+#         x = torch.__version__
+#         # TODO: Should maybe be a warning here?
+#     except NameError:
+#         os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "backend:cudaMallocAsync"
 
 import torch
 import math
@@ -66,6 +73,14 @@ class ExLlamaV2DeviceTensors:
             self.scratch = torch.empty((self.scratch_bytes // 2,), dtype = torch.half, device = _torch_device(self.device_idx))
 
         self.ready = True
+
+
+    def drop(self):
+
+        self.scratch = None
+        self.sin = None
+        self.cos = None
+        self.ready = False
 
 
     def begin_scratch_alloc(self):
@@ -149,10 +164,13 @@ class ExLlamaV2:
         self.modules_dict[self.modules[-1].key] = self.modules[-1]
 
         self.head_layer_idx = len(self.modules)
+
         self.modules.append(ExLlamaV2Linear(self, "lm_head", self.config.hidden_size, self.config.vocab_size, False))
         self.modules_dict[self.modules[-1].key] = self.modules[-1]
+        if self.config.architecture == "Gemma":
+            self.modules[-1].alt_key = "model.embed_tokens"
 
-        # Find last layer that affects k/v cache
+    # Find last layer that affects k/v cache
 
         layer_idx = len(self.modules)
         while True:
@@ -173,7 +191,6 @@ class ExLlamaV2:
         constant_size = sincos_size * 2
 
         # Max size of hidden state
-        # TODO: Option to reserve space for cache while loading model
 
         state_size = self.config.hidden_size * self.config.max_input_len * self.config.max_batch_size * 2
         mask_size = self.config.max_input_len ** 2 * self.config.max_batch_size * 2
@@ -245,7 +262,7 @@ class ExLlamaV2:
 
     def load(self, gpu_split = None, lazy = False, stats = False, callback = None, callback_gen = None):
         f = self.load_gen(gpu_split, lazy, stats, callback, callback_gen)
-        for item in f: return item
+        for item in f: x = item
 
 
     def load_gen(self, gpu_split = None, lazy = False, stats = False, callback = None, callback_gen = None):
@@ -275,8 +292,8 @@ class ExLlamaV2:
             self.loaded = True
             cleanup_stfiles()
 
-            if stats: yield gpu_split, stats_
-            else: yield gpu_split
+            # if stats: yield gpu_split, stats_
+            # else: yield gpu_split
 
 
     def load_autosplit(self, cache, reserve_vram = None, last_id_only = False, callback = None, callback_gen = None):
@@ -379,7 +396,9 @@ class ExLlamaV2:
                     except Exception as e:
 
                         test = 0
-                        if ("CUDA out of memory" in str(e)) or ("HIP out of memory" in str(e)):
+                        if e.__class__.__name__ == "OutOfMemoryError" or \
+                            "CUDA out of memory" in str(e) or \
+                            "HIP out of memory" in str(e):
                             fail = True  # Exception object will hold references to tensors so we can't free them here
                         else:
                             raise
@@ -449,6 +468,12 @@ class ExLlamaV2:
 
             tensors = ExLlamaV2DeviceTensors(self, idx, bytes)
             self.device_tensors.append(tensors)
+
+
+    def drop_device_tensors(self):
+
+        for dt in self.device_tensors:
+            dt.drop()
 
 
     def get_device_tensors(self, device_idx, scratch = True):

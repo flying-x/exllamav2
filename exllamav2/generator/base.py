@@ -42,8 +42,6 @@ class ExLlamaV2BaseGenerator:
         return self.sequence_ids.shape[-1] >= self.model.config.max_seq_len
 
 
-    # TODO: Argument to allow different random samples over batch dimension
-
     def generate_simple(self, prompt: str or list,
                         gen_settings: ExLlamaV2Sampler.Settings,
                         num_tokens: int,
@@ -52,7 +50,8 @@ class ExLlamaV2BaseGenerator:
                         encode_special_tokens = False,
                         decode_special_tokens = False,
                         loras = None,
-                        stop_token = -1):
+                        stop_token = -1,
+                        add_bos = False):
 
         # Default stop token
 
@@ -69,7 +68,7 @@ class ExLlamaV2BaseGenerator:
         # Tokenize input and produce padding mask if needed
 
         batch_size = 1 if isinstance(prompt, str) else len(prompt)
-        ids, position_offsets = self.tokenizer.encode(prompt, encode_special_tokens = encode_special_tokens, return_offsets = True)
+        ids, position_offsets = self.tokenizer.encode(prompt, encode_special_tokens = encode_special_tokens, return_offsets = True, add_bos = add_bos)
         if batch_size == 1: position_offsets = None
 
         overflow = ids.shape[-1] + num_tokens - self.model.config.max_seq_len
@@ -107,9 +106,8 @@ class ExLlamaV2BaseGenerator:
         for i in range(num_tokens):
 
             logits = self.model.forward(self.sequence_ids[:, -1:], self.cache, input_mask = mask, loras = loras, position_offsets = position_offsets).float().cpu()
-            token, _, _ = ExLlamaV2Sampler.sample(logits, gen_settings, self.sequence_ids, random.random(), self.tokenizer, prefix_token = unhealed_token)
+            token, _, _, _, eos = ExLlamaV2Sampler.sample(logits, gen_settings, self.sequence_ids, random.random(), self.tokenizer, prefix_token = unhealed_token)
 
-            eos = False
             if stop_token is not None:
                 for b in range(batch_size):
                     if token[b, 0].item() == stop_token:

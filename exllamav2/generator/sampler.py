@@ -25,6 +25,7 @@ class ExLlamaV2Sampler:
         min_p = 0
         tfs = 0
         typical = 0
+        skew = 0
 
         temperature_last = False
 
@@ -37,7 +38,7 @@ class ExLlamaV2Sampler:
         cfg_scale = None
 
         filters = []
-
+        filter_prefer_eos = False
 
         def clone(self):
 
@@ -108,7 +109,13 @@ class ExLlamaV2Sampler:
 
 
     @staticmethod
-    def sample(logits: torch.tensor, settings: Settings, sequence_ids: torch.tensor, random: float, tokenizer: ExLlamaV2Tokenizer, prefix_token = None):
+    def sample(logits: torch.tensor,
+               settings: Settings,
+               sequence_ids: torch.tensor,
+               random: float,
+               tokenizer: ExLlamaV2Tokenizer,
+               prefix_token = None,
+               return_top_tokens = 0):
 
         batch_size, _, vocab_size = logits.shape
 
@@ -162,11 +169,14 @@ class ExLlamaV2Sampler:
             for f in settings.filters:
 
                 pt, et = f.next()
-                pass_tokens = pt if pass_tokens is None else pass_tokens & pt
-                end_tokens = et if end_tokens is None else end_tokens | et
+                if pt is not None: pass_tokens = pt if pass_tokens is None else pass_tokens & pt
+                if et is not None: end_tokens = et if end_tokens is None else end_tokens | et
 
-            assert pass_tokens, "Filter excluded all tokens"
-            ext_c.logit_filter_exclusive(logit_filter, [sorted(list(pass_tokens))])
+            if pass_tokens is not None:
+                assert pass_tokens, "Filter excluded all tokens"
+                if settings.filter_prefer_eos and tokenizer.eos_token_id in pass_tokens:
+                    pass_tokens = { tokenizer.eos_token_id }
+                ext_c.logit_filter_exclusive(logit_filter, [sorted(list(pass_tokens))])
 
         # Healing
 
@@ -202,6 +212,12 @@ class ExLlamaV2Sampler:
 
         output_tokens = torch.empty((batch_size, 1), device = "cpu", dtype = torch.long)
         output_probs = torch.empty((batch_size, 1), device = "cpu", dtype = torch.float)
+        if return_top_tokens == 0:
+            output_ktokens = none_tensor
+            output_kprobs = none_tensor
+        else:
+            output_ktokens = torch.empty((batch_size, 1, return_top_tokens), device = "cpu", dtype = torch.long)
+            output_kprobs = torch.empty((batch_size, 1, return_top_tokens), device = "cpu", dtype = torch.float)
 
         m = ext_c.sample_basic(logits,
                                1.0 if settings.temperature_last else settings.temperature,
@@ -214,6 +230,8 @@ class ExLlamaV2Sampler:
                                random,
                                output_tokens,
                                output_probs,
+                               output_kprobs,
+                               output_ktokens,
                                logit_filter,
                                settings.mirostat,
                                settings.mirostat_mu if settings.mirostat else [],
@@ -223,7 +241,8 @@ class ExLlamaV2Sampler:
                                settings.min_temp,
                                settings.max_temp,
                                settings.temp_exponent,
-                               settings.smoothing_factor)
+                               settings.smoothing_factor,
+                               settings.skew)
 
         if settings.mirostat: settings.mirostat_mu = m
 
@@ -232,4 +251,4 @@ class ExLlamaV2Sampler:
         end_filter = False
         if len(settings.filters) > 0 and output_tokens[0].item() in end_tokens: end_filter = True
 
-        return output_tokens, output_probs, end_filter
+        return output_tokens, output_ktokens, output_kprobs, output_probs, end_filter
