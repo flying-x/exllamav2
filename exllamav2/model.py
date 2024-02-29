@@ -648,7 +648,7 @@ class ExLlamaV2:
             x = module.forward(x, cache = cache, attn_params = attn_params, past_len = past_len, loras = loras)
             #print("XXX", idx, module.name, module.device_idx, x.device, x.shape)
             if hasattr(module, "moq_func"):
-                module.moq_func(x)
+                module.moq_func(x, preprocess_only, past_len)
 
             if preprocess_only and idx == self.last_kv_layer_idx:
                 x = None
